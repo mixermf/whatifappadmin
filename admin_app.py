@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
-import base64
 import hmac
 import os
 
@@ -24,8 +23,8 @@ from admin_queries import (
 )
 
 
-BASIC_USERNAME = os.getenv("ADMIN_BASIC_USERNAME")
-BASIC_PASSWORD = os.getenv("ADMIN_BASIC_PASSWORD")
+LOGIN_USERNAME = os.getenv("ADMIN")
+LOGIN_PASSWORD = os.getenv("ADMIN_PASS")
 
 SEGMENTS = {
     "all": "All users",
@@ -50,37 +49,29 @@ def add_branding():
     )
 
 
-def require_basic_auth():
-    if not BASIC_USERNAME or not BASIC_PASSWORD:
+def require_login():
+    if not LOGIN_USERNAME or not LOGIN_PASSWORD:
         return True
 
-    try:
-        from streamlit.web.server.websocket_headers import _get_websocket_headers
+    if st.session_state.get("ui_authenticated"):
+        return True
 
-        headers = _get_websocket_headers() or {}
-    except Exception:
-        headers = {}
+    st.sidebar.warning("Login required.")
+    with st.sidebar.form("login_form", clear_on_submit=False):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
 
-    auth_header = headers.get("Authorization") or headers.get("authorization")
-    if auth_header and auth_header.lower().startswith("basic "):
-        encoded = auth_header.split(" ", 1)[1].strip()
-        try:
-            decoded = base64.b64decode(encoded).decode("utf-8")
-            username, password = decoded.split(":", 1)
-        except (ValueError, UnicodeDecodeError):
-            username = password = None
-
-        if (
-            username
-            and password
-            and hmac.compare_digest(username, BASIC_USERNAME)
-            and hmac.compare_digest(password, BASIC_PASSWORD)
+    if submitted:
+        if hmac.compare_digest(username, LOGIN_USERNAME) and hmac.compare_digest(
+            password, LOGIN_PASSWORD
         ):
+            st.session_state["ui_authenticated"] = True
+            st.sidebar.success("Authenticated")
             return True
+        st.sidebar.error("Invalid credentials")
 
-    st.error("Unauthorized. Provide HTTP Basic credentials.")
-    st.info("Example: http://username:password@host:port")
-    st.stop()
+    return False
 
 
 def utc_range_picker(key: str, default_days: int = 7):
@@ -242,11 +233,10 @@ def render_user_details():
         st.info("Enter a user ID to load details.")
         return
 
-    if not user_id_input.isdigit():
-        st.error("User ID must be numeric.")
+    user_id = user_id_input.strip()
+    if not user_id:
+        st.error("User ID is required.")
         return
-
-    user_id = int(user_id_input)
     summary = fetch_user_detail(user_id)
     if not summary:
         st.error("User not found.")
@@ -343,7 +333,8 @@ def main():
     st.sidebar.title("WhatIf Admin")
     st.sidebar.caption("Streamlit analytics console")
 
-    require_basic_auth()
+    if not require_login():
+        st.stop()
 
     pages = {
         "Overview": render_overview,

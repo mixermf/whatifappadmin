@@ -177,9 +177,11 @@ def get_users(
     stmt = apply_filters(stmt, segment_clause(segment, User.id, paying_subquery))
 
     if query:
-        filters = [User.install_id_hash.ilike(f"%{query}%"), User.google_sub.ilike(f"%{query}%")]
-        if query.isdigit():
-            filters.append(User.id == int(query))
+        filters = [
+            User.install_id_hash.ilike(f"%{query}%"),
+            User.google_sub.ilike(f"%{query}%"),
+            User.id == query,
+        ]
         stmt = stmt.where(or_(*filters))
 
     total_stmt = select(func.count()).select_from(stmt.subquery())
@@ -207,7 +209,7 @@ def get_users(
     return total, items
 
 
-def get_user_detail(session: Session, user_id: int):
+def get_user_detail(session: Session, user_id: str):
     paying_subquery = paying_user_ids_subquery()
     paying_ids = select(paying_subquery.c.user_id)
     is_paying = case((User.id.in_(paying_ids), True), else_=False).label("paying")
@@ -231,7 +233,7 @@ def get_user_detail(session: Session, user_id: int):
 
 def get_user_events(
     session: Session,
-    user_id: int,
+    user_id: str,
     start: datetime | None,
     end: datetime | None,
     trace_id: str | None,
@@ -272,7 +274,7 @@ def get_user_events(
 
 def get_user_credits(
     session: Session,
-    user_id: int,
+    user_id: str,
     start: datetime | None,
     end: datetime | None,
 ):
@@ -299,7 +301,7 @@ def get_user_credits(
 
 def get_user_iap(
     session: Session,
-    user_id: int,
+    user_id: str,
     start: datetime | None,
     end: datetime | None,
 ):
