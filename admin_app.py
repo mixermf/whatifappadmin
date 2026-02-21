@@ -1,21 +1,31 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
-import json
+import base64
+import hmac
 import os
 
 import pandas as pd
-import requests
 import streamlit as st
 
+from admin_db import get_session
+from admin_queries import (
+    Segment,
+    get_errors,
+    get_funnel,
+    get_job_events,
+    get_overview_metrics,
+    get_trace_events,
+    get_user_credits,
+    get_user_detail,
+    get_user_events,
+    get_user_iap,
+    get_users,
+)
 
-API_URL = os.getenv("ADMIN_API_URL", "").rstrip("/")
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
-ADMIN_API_BASIC_USERNAME = os.getenv("ADMIN_API_BASIC_USERNAME")
-ADMIN_API_BASIC_PASSWORD = os.getenv("ADMIN_API_BASIC_PASSWORD")
 
-UI_USERNAME = os.getenv("ADMIN_UI_USERNAME")
-UI_PASSWORD = os.getenv("ADMIN_UI_PASSWORD")
+BASIC_USERNAME = os.getenv("ADMIN_BASIC_USERNAME")
+BASIC_PASSWORD = os.getenv("ADMIN_BASIC_PASSWORD")
 
 SEGMENTS = {
     "all": "All users",
@@ -40,60 +50,37 @@ def add_branding():
     )
 
 
-def require_login():
-    if not UI_USERNAME and not UI_PASSWORD:
+def require_basic_auth():
+    if not BASIC_USERNAME or not BASIC_PASSWORD:
         return True
 
-    if st.session_state.get("ui_authenticated"):
-        return True
+    try:
+        from streamlit.web.server.websocket_headers import _get_websocket_headers
 
-    st.sidebar.warning("Admin UI protected. Please log in.")
-    with st.sidebar.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
+        headers = _get_websocket_headers() or {}
+    except Exception:
+        headers = {}
 
-    if submitted:
-        if username == UI_USERNAME and password == UI_PASSWORD:
-            st.session_state["ui_authenticated"] = True
-            st.sidebar.success("Authenticated")
+    auth_header = headers.get("Authorization") or headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("basic "):
+        encoded = auth_header.split(" ", 1)[1].strip()
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+            username, password = decoded.split(":", 1)
+        except (ValueError, UnicodeDecodeError):
+            username = password = None
+
+        if (
+            username
+            and password
+            and hmac.compare_digest(username, BASIC_USERNAME)
+            and hmac.compare_digest(password, BASIC_PASSWORD)
+        ):
             return True
-        st.sidebar.error("Invalid credentials")
 
-    return False
-
-
-def api_get(path: str, params: dict | None = None):
-    if not API_URL:
-        st.error("ADMIN_API_URL is not configured.")
-        st.stop()
-
-    headers = {}
-    if ADMIN_TOKEN:
-        headers["X-Admin-Token"] = ADMIN_TOKEN
-
-    auth = None
-    if ADMIN_API_BASIC_USERNAME and ADMIN_API_BASIC_PASSWORD:
-        auth = (ADMIN_API_BASIC_USERNAME, ADMIN_API_BASIC_PASSWORD)
-
-    response = requests.get(
-        f"{API_URL}{path}",
-        headers=headers,
-        params=params,
-        auth=auth,
-        timeout=30,
-    )
-
-    if response.status_code == 401:
-        st.error("Unauthorized. Check ADMIN_TOKEN or Basic Auth settings.")
-        st.stop()
-
-    response.raise_for_status()
-    return response.json()
-
-
-def to_iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat()
+    st.error("Unauthorized. Provide HTTP Basic credentials.")
+    st.info("Example: http://username:password@host:port")
+    st.stop()
 
 
 def utc_range_picker(key: str, default_days: int = 7):
@@ -122,65 +109,76 @@ def utc_range_picker(key: str, default_days: int = 7):
 
 
 @st.cache_data(ttl=60)
-def fetch_overview(start_iso: str, end_iso: str, segment: str):
-    return api_get(
-        "/admin/v1/overview",
-        params={"start": start_iso, "end": end_iso, "segment": segment},
-    )
+def fetch_overview(start_dt: datetime, end_dt: datetime, segment: str):
+    with get_session() as session:
+        return get_overview_metrics(session, start_dt, end_dt, Segment(segment))
 
 
 @st.cache_data(ttl=60)
-def fetch_funnel(start_iso: str, end_iso: str, segment: str):
-    return api_get(
-        "/admin/v1/funnel",
-        params={"start": start_iso, "end": end_iso, "segment": segment},
-    )
+def fetch_funnel(start_dt: datetime, end_dt: datetime, segment: str):
+    with get_session() as session:
+        return get_funnel(session, start_dt, end_dt, Segment(segment))
 
 
 @st.cache_data(ttl=60)
 def fetch_users(segment: str, query: str | None, limit: int, offset: int):
-    return api_get(
-        "/admin/v1/users",
-        params={"segment": segment, "query": query, "limit": limit, "offset": offset},
-    )
+    with get_session() as session:
+        total, items = get_users(session, Segment(segment), query, limit, offset)
+    return {"total": total, "items": items}
 
 
 @st.cache_data(ttl=60)
 def fetch_user_detail(user_id: int):
-    return api_get(f"/admin/v1/users/{user_id}")
+    with get_session() as session:
+        return get_user_detail(session, user_id)
 
 
 @st.cache_data(ttl=60)
-def fetch_user_events(user_id: int, params: dict):
-    return api_get(f"/admin/v1/users/{user_id}/events", params=params)
+def fetch_user_events(
+    user_id: int,
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+    trace_id: str | None,
+    job_id: str | None,
+    limit: int,
+    offset: int,
+):
+    with get_session() as session:
+        total, items = get_user_events(
+            session, user_id, start_dt, end_dt, trace_id, job_id, limit, offset
+        )
+    return {"total": total, "items": items}
 
 
 @st.cache_data(ttl=60)
-def fetch_user_credits(user_id: int, params: dict):
-    return api_get(f"/admin/v1/users/{user_id}/credits", params=params)
+def fetch_user_credits(user_id: int, start_dt: datetime | None, end_dt: datetime | None):
+    with get_session() as session:
+        return get_user_credits(session, user_id, start_dt, end_dt)
 
 
 @st.cache_data(ttl=60)
-def fetch_user_iap(user_id: int, params: dict):
-    return api_get(f"/admin/v1/users/{user_id}/iap", params=params)
+def fetch_user_iap(user_id: int, start_dt: datetime | None, end_dt: datetime | None):
+    with get_session() as session:
+        return get_user_iap(session, user_id, start_dt, end_dt)
 
 
 @st.cache_data(ttl=60)
 def fetch_trace_events(trace_id: str):
-    return api_get(f"/admin/v1/traces/{trace_id}/events")
+    with get_session() as session:
+        return get_trace_events(session, trace_id)
 
 
 @st.cache_data(ttl=60)
 def fetch_job_events(job_id: str):
-    return api_get(f"/admin/v1/jobs/{job_id}/events")
+    with get_session() as session:
+        return get_job_events(session, job_id)
 
 
 @st.cache_data(ttl=60)
-def fetch_errors(start_iso: str, end_iso: str, limit: int):
-    return api_get(
-        "/admin/v1/errors",
-        params={"start": start_iso, "end": end_iso, "limit": limit},
-    )
+def fetch_errors(start_dt: datetime, end_dt: datetime, limit: int):
+    with get_session() as session:
+        total, items = get_errors(session, start_dt, end_dt, limit)
+    return {"total": total, "items": items}
 
 
 def render_overview():
@@ -192,7 +190,7 @@ def render_overview():
         st.error("Start datetime must be earlier than end datetime.")
         return
 
-    data = fetch_overview(to_iso(start_dt), to_iso(end_dt), segment)
+    data = fetch_overview(start_dt, end_dt, segment)
 
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("New users", f"{data['new_users']:,}")
@@ -214,8 +212,7 @@ def render_funnel():
     tabs = st.tabs([SEGMENTS[key] for key in SEGMENTS])
     for tab, segment in zip(tabs, SEGMENTS, strict=False):
         with tab:
-            data = fetch_funnel(to_iso(start_dt), to_iso(end_dt), segment)
-            steps = data.get("steps", [])
+            steps = fetch_funnel(start_dt, end_dt, segment)
             df = pd.DataFrame(steps)
             if df.empty:
                 st.info("No events in this period.")
@@ -251,24 +248,21 @@ def render_user_details():
 
     user_id = int(user_id_input)
     summary = fetch_user_detail(user_id)
+    if not summary:
+        st.error("User not found.")
+        return
 
     st.subheader("Summary")
-    st.json(summary.get("user", {}))
+    st.json(summary)
 
     st.subheader("Credits Ledger")
     credit_start, credit_end = utc_range_picker("credits", default_days=30)
-    credits = fetch_user_credits(
-        user_id,
-        {"start": to_iso(credit_start), "end": to_iso(credit_end)},
-    )
+    credits = fetch_user_credits(user_id, credit_start, credit_end)
     st.dataframe(pd.DataFrame(credits), use_container_width=True)
 
     st.subheader("IAP Transactions")
     iap_start, iap_end = utc_range_picker("iap", default_days=30)
-    iap = fetch_user_iap(
-        user_id,
-        {"start": to_iso(iap_start), "end": to_iso(iap_end)},
-    )
+    iap = fetch_user_iap(user_id, iap_start, iap_end)
     st.dataframe(pd.DataFrame(iap), use_container_width=True)
 
     st.subheader("Event Log")
@@ -276,15 +270,15 @@ def render_user_details():
     trace_filter = st.text_input("Trace ID filter", key="user_trace_filter")
     job_filter = st.text_input("Job ID filter", key="user_job_filter")
 
-    event_params = {
-        "start": to_iso(events_start),
-        "end": to_iso(events_end),
-        "trace_id": trace_filter or None,
-        "job_id": job_filter or None,
-        "limit": 200,
-        "offset": 0,
-    }
-    events_response = fetch_user_events(user_id, event_params)
+    events_response = fetch_user_events(
+        user_id,
+        events_start,
+        events_end,
+        trace_filter or None,
+        job_filter or None,
+        200,
+        0,
+    )
     events = events_response.get("items", [])
 
     st.caption(f"Total events: {events_response.get('total', 0)}")
@@ -336,7 +330,7 @@ def render_errors():
         st.error("Start datetime must be earlier than end datetime.")
         return
 
-    data = fetch_errors(to_iso(start_dt), to_iso(end_dt), limit)
+    data = fetch_errors(start_dt, end_dt, limit)
     df = pd.DataFrame(data.get("items", []))
     st.caption(f"Total error events: {data.get('total', 0)}")
     st.dataframe(df, use_container_width=True)
@@ -349,8 +343,7 @@ def main():
     st.sidebar.title("WhatIf Admin")
     st.sidebar.caption("Streamlit analytics console")
 
-    if not require_login():
-        st.stop()
+    require_basic_auth()
 
     pages = {
         "Overview": render_overview,
