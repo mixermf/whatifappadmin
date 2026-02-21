@@ -328,6 +328,13 @@ def get_user_iap(
     ]
 
 
+def get_recent_users(session: Session, limit: int = 10):
+    rows = session.execute(
+        select(User.id, User.created_at).order_by(User.created_at.desc()).limit(limit)
+    ).all()
+    return [{"id": row.id, "created_at": row.created_at} for row in rows]
+
+
 def get_trace_events(session: Session, trace_id: str):
     rows = session.execute(
         select(EventLog)

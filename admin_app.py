@@ -14,6 +14,7 @@ from admin_queries import (
     get_funnel,
     get_job_events,
     get_overview_metrics,
+    get_recent_users,
     get_trace_events,
     get_user_credits,
     get_user_detail,
@@ -172,6 +173,12 @@ def fetch_errors(start_dt: datetime, end_dt: datetime, limit: int):
     return {"total": total, "items": items}
 
 
+@st.cache_data(ttl=60)
+def fetch_recent_users(limit: int = 10):
+    with get_session() as session:
+        return get_recent_users(session, limit)
+
+
 def render_overview():
     st.header("Overview / KPI")
     start_dt, end_dt = utc_range_picker("overview")
@@ -228,7 +235,22 @@ def render_users_explorer():
 
 def render_user_details():
     st.header("User Details")
-    user_id_input = st.text_input("User ID")
+    recent_users = fetch_recent_users()
+    options = ["(enter manually)"] + [item["id"] for item in recent_users]
+    labels = ["(enter manually)"] + [
+        f"{item['id']} · {item['created_at']}" for item in recent_users
+    ]
+
+    selected = st.selectbox(
+        "Quick select recent users",
+        options=options,
+        format_func=lambda value: labels[options.index(value)],
+    )
+    if selected == "(enter manually)":
+        user_id_input = st.text_input("User ID")
+    else:
+        user_id_input = selected
+
     if not user_id_input:
         st.info("Enter a user ID to load details.")
         return
