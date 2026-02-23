@@ -10,6 +10,7 @@ import streamlit as st
 from admin_db import get_session
 from admin_queries import (
     Segment,
+    get_completed_generations_by_preset,
     get_errors,
     get_funnel,
     get_job_events,
@@ -105,6 +106,19 @@ def utc_range_picker(key: str, default_days: int = 7):
 def fetch_overview(start_dt: datetime, end_dt: datetime, segment: str):
     with get_session() as session:
         return get_overview_metrics(session, start_dt, end_dt, Segment(segment))
+
+
+@st.cache_data(ttl=60)
+def fetch_completed_generations_by_preset(
+    start_dt: datetime,
+    end_dt: datetime,
+    segment: str,
+    limit: int = 50,
+):
+    with get_session() as session:
+        return get_completed_generations_by_preset(
+            session, start_dt, end_dt, Segment(segment), limit
+        )
 
 
 @st.cache_data(ttl=60)
@@ -205,6 +219,16 @@ def render_overview():
     col4.metric("Jobs succeeded", f"{data['jobs_succeeded']:,}")
     col5.metric("Jobs failed", f"{data['jobs_failed']:,}")
     col6.metric("Conversion to pay", f"{data['conversion_to_pay'] * 100:.1f}%")
+
+    st.subheader("Completed generations by preset")
+    preset_rows = fetch_completed_generations_by_preset(start_dt, end_dt, segment)
+    preset_df = pd.DataFrame(preset_rows)
+    if preset_df.empty:
+        st.info("No completed generations in this period.")
+        return
+
+    preset_df = preset_df.set_index("preset_id")
+    st.bar_chart(preset_df["count"])
 
 
 def render_funnel():

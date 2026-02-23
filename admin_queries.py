@@ -132,6 +132,39 @@ def get_overview_metrics(session: Session, start: datetime, end: datetime, segme
     }
 
 
+def get_completed_generations_by_preset(
+    session: Session,
+    start: datetime,
+    end: datetime,
+    segment: Segment,
+    limit: int = 50,
+):
+    paying_subquery = paying_user_ids_subquery()
+    event_segment = segment_clause(segment, EventLog.user_id, paying_subquery)
+    preset_id = EventLog.payload["preset_id"].astext
+
+    stmt = (
+        select(
+            preset_id.label("preset_id"),
+            func.count(distinct(EventLog.job_id)).label("count"),
+        )
+        .where(
+            EventLog.created_at >= start,
+            EventLog.created_at < end,
+            EventLog.event.in_(JOB_SUCCEEDED_EVENTS),
+            EventLog.job_id.isnot(None),
+            preset_id.isnot(None),
+        )
+        .group_by(preset_id)
+        .order_by(func.count().desc())
+        .limit(limit)
+    )
+    stmt = apply_filters(stmt, event_segment)
+
+    rows = session.execute(stmt).all()
+    return [{"preset_id": row.preset_id, "count": row.count} for row in rows]
+
+
 def get_funnel(session: Session, start: datetime, end: datetime, segment: Segment):
     paying_subquery = paying_user_ids_subquery()
     event_segment = segment_clause(segment, EventLog.user_id, paying_subquery)
