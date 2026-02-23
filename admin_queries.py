@@ -209,6 +209,18 @@ def get_users(
     return total, items
 
 
+def get_preset_ids(session: Session, limit: int = 5000):
+    preset_id = EventLog.payload["preset_id"].astext
+    rows = session.execute(
+        select(distinct(preset_id))
+        .where(preset_id.isnot(None))
+        .order_by(preset_id.asc())
+        .limit(limit)
+    ).scalars().all()
+
+    return [value for value in rows if value]
+
+
 def get_user_detail(session: Session, user_id: str):
     paying_subquery = paying_user_ids_subquery()
     paying_ids = select(paying_subquery.c.user_id)
@@ -238,6 +250,7 @@ def get_user_events(
     end: datetime | None,
     trace_id: str | None,
     job_id: str | None,
+    preset_id: str | None,
     limit: int,
     offset: int,
 ):
@@ -250,6 +263,8 @@ def get_user_events(
         stmt = stmt.where(EventLog.trace_id == trace_id)
     if job_id:
         stmt = stmt.where(EventLog.job_id == job_id)
+    if preset_id:
+        stmt = stmt.where(EventLog.payload["preset_id"].astext == preset_id)
 
     total = session.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     rows = session.execute(

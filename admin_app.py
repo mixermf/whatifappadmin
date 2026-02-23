@@ -14,6 +14,7 @@ from admin_queries import (
     get_funnel,
     get_job_events,
     get_overview_metrics,
+    get_preset_ids,
     get_recent_users,
     get_trace_events,
     get_user_credits,
@@ -132,12 +133,13 @@ def fetch_user_events(
     end_dt: datetime | None,
     trace_id: str | None,
     job_id: str | None,
+    preset_id: str | None,
     limit: int,
     offset: int,
 ):
     with get_session() as session:
         total, items = get_user_events(
-            session, user_id, start_dt, end_dt, trace_id, job_id, limit, offset
+            session, user_id, start_dt, end_dt, trace_id, job_id, preset_id, limit, offset
         )
     return {"total": total, "items": items}
 
@@ -177,6 +179,12 @@ def fetch_errors(start_dt: datetime, end_dt: datetime, limit: int):
 def fetch_recent_users(limit: int = 10):
     with get_session() as session:
         return get_recent_users(session, limit)
+
+
+@st.cache_data(ttl=300)
+def fetch_preset_ids(limit: int = 5000):
+    with get_session() as session:
+        return get_preset_ids(session, limit)
 
 
 def render_overview():
@@ -281,6 +289,12 @@ def render_user_details():
     events_start, events_end = utc_range_picker("user_events", default_days=7)
     trace_filter = st.text_input("Trace ID filter", key="user_trace_filter")
     job_filter = st.text_input("Job ID filter", key="user_job_filter")
+    preset_ids = fetch_preset_ids()
+    preset_filter = st.selectbox(
+        "Preset ID filter",
+        options=["(all)"] + preset_ids,
+        key="user_preset_filter",
+    )
 
     events_response = fetch_user_events(
         user_id,
@@ -288,6 +302,7 @@ def render_user_details():
         events_end,
         trace_filter or None,
         job_filter or None,
+        None if preset_filter == "(all)" else preset_filter,
         200,
         0,
     )
